@@ -2,7 +2,8 @@ from typing import Optional
 import re
 import streamlit as st
 from googleapiclient.errors import HttpError
-from googleapiclient.discovery import Resource  # ← важно для hash_funcs
+from googleapiclient.discovery import Resource
+from .quota import add
 
 _UC_RE = re.compile(r"(UC[0-9A-Za-z_-]{20,})", re.I)
 
@@ -29,19 +30,19 @@ def extract_handle(s: str, treat_bare_names: bool = False) -> Optional[str]:
             return token.lower()
     return None
 
-# кэш резолва handle → channel_id; игнорируем youtube-клиент при хэшировании
 @st.cache_data(show_spinner=False, ttl=7200, hash_funcs={Resource: lambda _: b"yt"})
 def resolve_handle_to_channel_id(youtube, handle: str) -> Optional[str]:
-    """Через search→channels проверяем customUrl и берём подходящий channel_id."""
     try:
+        add(100, note=f"search.list:channel handle=@{handle}")
         sres = youtube.search().list(
             q=handle, part="snippet", type="channel", maxResults=10
         ).execute()
-        ch_ids = [it["snippet"]["channelId"] for it in sres.get("items", []) if it.get("snippet")]
+        ch_ids = [it["id"]["channelId"] if "id" in it and "channelId" in it["id"] else it["snippet"]["channelId"]
+                  for it in sres.get("items", []) if it.get("snippet")]
         if not ch_ids:
             return None
+        add(1, note="channels.list (resolve handle)")
         cres = youtube.channels().list(part="snippet", id=",".join(ch_ids[:50])).execute()
-        # точное совпадение customUrl
         for it in cres.get("items", []):
             custom = (it.get("snippet", {}).get("customUrl") or "").lstrip("@").lower()
             if custom == handle.lower():

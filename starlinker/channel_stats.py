@@ -3,7 +3,8 @@ from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 from googleapiclient.errors import HttpError
-from googleapiclient.discovery import Resource  # для hash_funcs
+from googleapiclient.discovery import Resource
+from .quota import add
 
 def _chunked(seq: List[str], n: int) -> Iterable[List[str]]:
     for i in range(0, len(seq), n):
@@ -11,22 +12,10 @@ def _chunked(seq: List[str], n: int) -> Iterable[List[str]]:
 
 @st.cache_data(show_spinner=False, ttl=3600, hash_funcs={Resource: lambda _: b"yt"})
 def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, dict]:
-    """
-    Батч-запрос статистики каналов + uploads playlist id + customUrl (для дедупа по handle).
-    Возвращает:
-    {
-      channel_id: {
-        'subs': int,
-        'total_views': int,
-        'country': str,
-        'uploads_playlist_id': str,
-        'custom_url': str|None,
-      }, ...
-    }
-    """
     out: Dict[str, dict] = {}
     for batch in _chunked(channel_ids, 50):
         try:
+            add(1, note=f"channels.list x{len(batch)}")
             res = youtube.channels().list(
                 part="statistics,snippet,contentDetails",
                 id=",".join(batch)
@@ -35,7 +24,7 @@ def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, dict]:
             continue
         for item in res.get("items", []):
             ch_id = item["id"]
-            stats = item.get("statistics", {})
+            stats = item.get("statistics", {}) or {}
             snip = item.get("snippet", {}) or {}
             cdet = item.get("contentDetails", {}) or {}
             out[ch_id] = {
@@ -43,7 +32,6 @@ def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, dict]:
                 "total_views": int(stats.get("viewCount", 0) or 0),
                 "country": snip.get("country", "N/A"),
                 "uploads_playlist_id": cdet.get("relatedPlaylists", {}).get("uploads", ""),
-                # customUrl нужен для совпадений по handle:
                 "custom_url": (snip.get("customUrl") or None),
             }
     return out
@@ -51,11 +39,12 @@ def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, dict]:
 def _iso_to_dt(s: str) -> datetime:
     return datetime.fromisoformat(s.replace("Z", "+00:00"))
 
-def iter_recent_upload_video_ids(youtube, uploads_playlist_id: str, since_dt: datetime, max_fetch: int) -> Iterable[str]:
+def iter_recent_upload_video_ids(youtube, uploads_playlist_id: str, since_dt: datetime, max_fetch: int):
     fetched = 0
     page_token: Optional[str] = None
     while True:
         try:
+            add(1, note="playlistItems.list")
             pl = youtube.playlistItems().list(
                 part="contentDetails",
                 playlistId=uploads_playlist_id,
@@ -78,7 +67,6 @@ def iter_recent_upload_video_ids(youtube, uploads_playlist_id: str, since_dt: da
 
 @st.cache_data(show_spinner=False, ttl=900, hash_funcs={Resource: lambda _: b"yt"})
 def get_avg_views_for_period(youtube, uploads_playlist_id: str, days: int, max_fetch: int) -> Tuple[Optional[int], int]:
-    """Средние просмотры по видео за последние `days` дней: (avg_or_None, count_in_period)."""
     since_dt = datetime.now(timezone.utc) - timedelta(days=days)
     vids = list(iter_recent_upload_video_ids(youtube, uploads_playlist_id, since_dt, max_fetch=max_fetch))
     if not vids:
@@ -88,6 +76,7 @@ def get_avg_views_for_period(youtube, uploads_playlist_id: str, days: int, max_f
     counted = 0
     for batch in _chunked(vids, 50):
         try:
+            add(1, note=f"videos.list x{len(batch)}")
             vres = youtube.videos().list(part="statistics", id=",".join(batch)).execute()
         except HttpError:
             continue
