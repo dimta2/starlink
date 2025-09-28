@@ -1,7 +1,6 @@
-# Starlinker Rolling build B280925A
-
 import streamlit as st
 import pandas as pd
+
 from starlinker.config import get_api_key
 from starlinker.youtube_client import get_youtube_client
 from starlinker.search import search_channels_by_keyword
@@ -9,7 +8,7 @@ from starlinker.channel_stats import fetch_channels_stats, get_avg_views_for_per
 from starlinker.dedupe import load_existing_ids
 
 st.set_page_config(page_title="StarLinker", page_icon="🔎", layout="wide")
-st.title("🔎 StarLinker — Поиск блогеров на YouTube Rolling")
+st.title("🔎 StarLinker — Поиск блогеров на YouTube")
 
 API_KEY = get_api_key()
 if not API_KEY:
@@ -66,7 +65,7 @@ if st.button("🔍 Найти блогеров"):
         except Exception as e:
             st.warning(f"⚠️ Не удалось прочитать базу: {e}")
 
-    # 1) по ключам
+    # 1) поиск по ключам
     all_channels = {}
     prog = st.progress(0); stat = st.empty()
     for i, kw in enumerate(keywords, start=1):
@@ -92,9 +91,9 @@ if st.button("🔍 Найти блогеров"):
 
     # 3) фильтр подписчики/total
     base_pass = [cid for cid, s in stats_map.items()
-                 if s["uploads_playlist_id"]
-                 and (min_subs <= s["subs"] <= max_subs)
-                 and (s["total_views"] >= min_views_total)]
+                 if s.get("uploads_playlist_id")
+                 and (min_subs <= s.get("subs", 0) <= max_subs)
+                 and (s.get("total_views", 0) >= min_views_total)]
     if not base_pass:
         st.warning("Никто не прошёл фильтры по подписчикам/просмотрам.")
         st.stop()

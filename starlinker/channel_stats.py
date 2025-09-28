@@ -1,18 +1,18 @@
-from __future__ import annotations
 from typing import Dict, Iterable, List, Tuple, Optional
 from datetime import datetime, timedelta, timezone
+
 import streamlit as st
 from googleapiclient.errors import HttpError
-from .types import ChannelStats
+from googleapiclient.discovery import Resource  # ← важно для hash_funcs
 
 def _chunked(seq: List[str], n: int) -> Iterable[List[str]]:
     for i in range(0, len(seq), n):
         yield seq[i:i+n]
 
-@st.cache_data(show_spinner=False, ttl=3600)
-def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, ChannelStats]:
+@st.cache_data(show_spinner=False, ttl=3600, hash_funcs={Resource: lambda _: b"yt"})
+def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, dict]:
     """Батч-запрос статистики каналов + uploads playlist id."""
-    out: Dict[str, ChannelStats] = {}
+    out: Dict[str, dict] = {}
     for batch in _chunked(channel_ids, 50):
         try:
             res = youtube.channels().list(
@@ -62,7 +62,7 @@ def iter_recent_upload_video_ids(youtube, uploads_playlist_id: str, since_dt: da
         if not page_token:
             return
 
-@st.cache_data(show_spinner=False, ttl=900)
+@st.cache_data(show_spinner=False, ttl=900, hash_funcs={Resource: lambda _: b"yt"})
 def get_avg_views_for_period(youtube, uploads_playlist_id: str, days: int, max_fetch: int) -> Tuple[Optional[int], int]:
     """Средние просмотры по видео за последние `days` дней: (avg_or_None, count_in_period)."""
     since_dt = datetime.now(timezone.utc) - timedelta(days=days)

@@ -1,8 +1,8 @@
-from __future__ import annotations
-from typing import Dict, Optional, Tuple, List
+from typing import Optional
 import re
 import streamlit as st
 from googleapiclient.errors import HttpError
+from googleapiclient.discovery import Resource  # ← важно для hash_funcs
 
 _UC_RE = re.compile(r"(UC[0-9A-Za-z_-]{20,})", re.I)
 
@@ -29,7 +29,8 @@ def extract_handle(s: str, treat_bare_names: bool = False) -> Optional[str]:
             return token.lower()
     return None
 
-@st.cache_data(show_spinner=False, ttl=7200)
+# кэш резолва handle → channel_id; игнорируем youtube-клиент при хэшировании
+@st.cache_data(show_spinner=False, ttl=7200, hash_funcs={Resource: lambda _: b"yt"})
 def resolve_handle_to_channel_id(youtube, handle: str) -> Optional[str]:
     """Через search→channels проверяем customUrl и берём подходящий channel_id."""
     try:
