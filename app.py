@@ -1,5 +1,6 @@
+# app.py
 import os
-os.environ["STREAMLIT_SERVER_FILEWATCHER_TYPE"] = "none"  # отключаем file-watcher на хостингах
+os.environ["STREAMLIT_SERVER_FILEWATCHER_TYPE"] = "none"  # чтобы избежать inotify ENOSPC на хостингах
 
 import streamlit as st
 import pandas as pd
@@ -19,31 +20,32 @@ if not API_KEY:
     st.stop()
 
 with st.sidebar:
-    st.subheader("🎛️ Настройки")
+    st.subheader("🎛️ Интенсивность поиска (один переключатель)")
     intensity = st.selectbox(
         "Интенсивность поиска",
         ["Низкая (дёшево)", "Средняя (сбаланс.)", "Высокая (глубоко)"],
         index=1
     )
-    # пресеты глубины/стоимости
+    # единая ручка управляет глубиной/стоимостью
     PRESETS = {
-        "Низкая (дёшево)":  {"pages": 1, "max_ch_per_kw": 80,  "videos_for_avg": 40,  "by_channel": True},
+        "Низкая (дёшево)":    {"pages": 1, "max_ch_per_kw": 80,  "videos_for_avg": 40,  "by_channel": True},
         "Средняя (сбаланс.)": {"pages": 2, "max_ch_per_kw": 200, "videos_for_avg": 80,  "by_channel": False},
-        "Высокая (глубоко)": {"pages": 3, "max_ch_per_kw": 350, "videos_for_avg": 120, "by_channel": False},
+        "Высокая (глубоко)":  {"pages": 3, "max_ch_per_kw": 350, "videos_for_avg": 120, "by_channel": False},
     }
     P = PRESETS[intensity]
 
     st.markdown("---")
-    st.subheader("📊 Фильтры качества")
+    st.subheader("📊 Фильтры качества (как раньше)")
     min_subs = st.number_input("Мин. подписчиков", value=1_000, step=500)
-    min_avg_period = st.number_input("Мин. средние просмотры за период", value=2_000, step=100)
-    period_days = st.number_input("Период (дней)", 1, 90, 30)
+    max_subs = st.number_input("Макс. подписчиков", value=500_000, step=1_000)
+    min_views_total = st.number_input("Мин. просмотров канала (total)", value=10_000, step=1_000)
+    period_days = st.number_input("Период для среднего (дней)", 1, 90, 30)
+    min_avg_views_period = st.number_input("Мин. средние просмотры за период", value=2_000, step=100)
 
     st.markdown("---")
-    st.subheader("🗂️ База для исключения (один столбец — названия каналов)")
-    uploaded_file = st.file_uploader("Загрузи Excel/CSV", type=["xlsx", "csv"])
-
-    st.caption("Под капотом мы используем кеш и бэтчи API, чтобы экономить квоту.")
+    st.subheader("🗂️ База дубликатов (простой режим)")
+    uploaded_file = st.file_uploader("Excel/CSV с ОДНИМ столбцом названий каналов", type=["xlsx", "csv"])
+    st.caption("Мы исключим каналы, чьи названия совпадают с названиями из файла (без учёта регистра и лишних пробелов).")
 
 keywords_input = st.text_area("Ключевые слова (по одному в строке)")
 keywords = [k.strip() for k in keywords_input.splitlines() if k.strip()]
@@ -55,25 +57,21 @@ if st.button("🔍 Найти блогеров"):
 
     yt = get_youtube_client(API_KEY)
 
-    # 0) Читаем базу — только названия (lower/trim/схлопнутые пробелы)
+    # 0) Чтение базы: один столбец с названиями (любой лист объединяем)
     title_blocklist = set()
     if uploaded_file is not None:
         try:
             if uploaded_file.name.endswith(".csv"):
                 df_in = pd.read_csv(uploaded_file)
             else:
-                # если в книге несколько листов — объединим
                 raw = pd.read_excel(uploaded_file, sheet_name=None)
-                if isinstance(raw, dict):
-                    df_in = pd.concat(raw.values(), ignore_index=True, sort=False)
-                else:
-                    df_in = raw
+                df_in = pd.concat(raw.values(), ignore_index=True, sort=False) if isinstance(raw, dict) else raw
             title_blocklist = build_title_blocklist(df_in)
-            st.info(f"📂 Дедуп по названиям: загружено {len(title_blocklist)} каналов из базы")
+            st.info(f"📂 Дедуп по названию: {len(title_blocklist)} записей из базы")
         except Exception as e:
             st.warning(f"⚠️ Не удалось прочитать файл: {e}")
 
-    # 1) Поиск каналов по ключам (в один словарь)
+    # 1) Поиск каналов по ключам
     all_channels: dict[str, str] = {}
     prog = st.progress(0)
     note = st.empty()
@@ -90,10 +88,10 @@ if st.button("🔍 Найти блогеров"):
         prog.progress(int(i / max(1, len(keywords)) * 25))
 
     if not all_channels:
-        st.warning("Ничего не найдено на этапе поиска (попробуй другие ключевые слова).")
+        st.warning("Ничего не найдено на этапе поиска.")
         st.stop()
 
-    # 2) Статистика каналов (батч)
+    # 2) Батч-статистика каналов
     note.write(f"📦 Получаю статистику по {len(all_channels)} каналам…")
     stats = fetch_channels_stats(yt, list(all_channels.keys()))
     prog.progress(60)
@@ -104,16 +102,24 @@ if st.button("🔍 Найти блогеров"):
 
     if title_blocklist:
         before = len(stats)
-        drop_ids = [cid for cid, s in stats.items() if norm_title(s.get("title") or all_channels.get(cid)) in title_blocklist]
+        drop_ids = [
+            cid for cid, s in stats.items()
+            if norm_title(s.get("title") or all_channels.get(cid)) in title_blocklist
+        ]
         for cid in drop_ids:
             stats.pop(cid, None); all_channels.pop(cid, None)
         st.caption(f"🧹 Исключено по названию из базы: {before - len(stats)}")
     prog.progress(65)
 
-    # 4) Фильтр по подписчикам (total views убрали из простого режима)
-    base_pass = [cid for cid, s in stats.items() if s.get("uploads_playlist_id") and s.get("subs", 0) >= min_subs]
+    # 4) Фильтр по подписчикам и total просмотрам канала
+    base_pass = [
+        cid for cid, s in stats.items()
+        if s.get("uploads_playlist_id")
+        and (min_subs <= s.get("subs", 0) <= max_subs)
+        and (s.get("total_views", 0) >= min_views_total if "total_views" in s else True)  # если поле есть
+    ]
     if not base_pass:
-        st.warning("Никто не прошёл фильтр по подписчикам.")
+        st.warning("Никто не прошёл фильтры по подписчикам/просмотрам.")
         st.stop()
 
     # 5) Средние просмотры за период
@@ -122,7 +128,7 @@ if st.button("🔍 Найти блогеров"):
         t = stats[cid].get("title") or all_channels.get(cid, cid)
         note.write(f"⏱️ {i}/{len(base_pass)} • Средние за {period_days} дн.: {t}")
         avg, count = get_avg_views_for_period(yt, stats[cid]["uploads_playlist_id"], period_days, P["videos_for_avg"])
-        if avg is None or avg < min_avg_period:
+        if avg is None or avg < min_avg_views_period:
             prog.progress(65 + int(35 * i / len(base_pass)))
             continue
         rows.append({
@@ -148,4 +154,4 @@ if st.button("🔍 Найти блогеров"):
         with open(xlsx, "rb") as f:
             st.download_button("📥 Скачать Excel", f, file_name="bloggers.xlsx")
     else:
-        st.warning("По заданным условиям ничего не найдено. Ослабь фильтр «Мин. средние просмотры» или увеличь период.")
+        st.warning("По заданным условиям ничего не найдено. Ослабь «Мин. средние просмотры» или увеличь период.")
