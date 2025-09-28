@@ -1,8 +1,9 @@
-# StarLinker v. 1.2
+# StarLinker v. 1.3
 # a tool for searching YouTube influencers
 # (c) StarPets 2025
 
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Dict, List, Tuple, Optional, Iterable
 
@@ -12,14 +13,56 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 from dotenv import load_dotenv
 
+# =================== НАСТРОЙКА СТРАНИЦЫ ===================
+st.set_page_config(page_title="StarLinker", page_icon="🔎", layout="wide")
+
 # =================== ИНИЦИАЛИЗАЦИЯ ===================
 load_dotenv()
+# сначала пробуем Streamlit secrets, потом .env
+api_key = os.getenv("YOUTUBE_API_KEY")
+try:
+    import streamlit as st
+    if not api_key:
+        api_key = st.secrets.get("YOUTUBE_API_KEY")
+except Exception:
+    pass
+
 API_KEY = os.getenv("YOUTUBE_API_KEY")
 
-st.set_page_config(page_title="StarLinker", page_icon="🔎", layout="wide")
-st.title("🔎 StarLinker — Поиск блогеров на YouTube (v1.2)")
+st.title("🔎 StarLinker — Поиск блогеров на YouTube (v1.3)")
 
-# -------- Панель параметров --------
+# =================== ХЕЛПЕРЫ ===================
+def chunked(iterable: List[str], size: int) -> Iterable[List[str]]:
+    for i in range(0, len(iterable), size):
+        yield iterable[i:i + size]
+
+def iso_to_dt(s: str) -> datetime:
+    return datetime.fromisoformat(s.replace("Z", "+00:00"))
+
+def build_client(api_key: str):
+    return build("youtube", "v3", developerKey=api_key)
+
+def extract_channel_id(url_or_id: str) -> str:
+    """
+    Пытается вытащить channel_id (обычно начинается с 'UC').
+    Поддерживает:
+      - https://www.youtube.com/channel/UCxxxx
+      - просто 'UCxxxx' (чистый id в ячейке)
+    Возвращает '' если не удалось.
+    """
+    if not isinstance(url_or_id, str):
+        return ""
+    s = url_or_id.strip()
+    # чистый UC-id
+    if re.fullmatch(r"UC[0-9A-Za-z_-]{20,}", s):
+        return s
+    # ссылка с /channel/UC...
+    m = re.search(r"(?:/channel/)(UC[0-9A-Za-z_-]{20,})", s)
+    if m:
+        return m.group(1)
+    return ""
+
+# =================== САЙДБАР: ПАРАМЕТРЫ ===================
 with st.sidebar:
     st.header("⚙️ Параметры поиска")
     max_pages_per_keyword = st.number_input(
@@ -29,11 +72,11 @@ with st.sidebar:
     )
     max_channels_per_keyword = st.number_input(
         "Ограничение каналов на ключ",
-        min_value=10, max_value=1000, value=200, step=10,
+        min_value=10, max_value=5000, value=500, step=10,
         help="Чтобы не сжигать квоту, можно ограничить число уникальных каналов на ключ."
     )
     max_recent_uploads_fetch = st.number_input(
-        "Макс. загруженных видео на канал (для расчёта среднего)",
+        "Макс. загруженных видео на канал (для среднего за период)",
         min_value=20, max_value=500, value=150, step=10,
         help="Сколько последних видео смотреть из плейлиста загрузок канала."
     )
@@ -47,25 +90,65 @@ with st.sidebar:
     period_days = st.number_input("Период (дней) для среднего по видео", value=30, min_value=1, max_value=90)
     min_avg_views_period = st.number_input("Мин. средние просмотры за период", value=2_000, step=100)
 
-# -------- Ввод данных --------
+    st.markdown("---")
+    st.header("🗂️ Исключить уже имеющихся блогеров")
+    uploaded_file = st.file_uploader(
+        "Загрузите Excel/CSV из вашей базы (со столбцом 'Ссылка' или 'channel_id')",
+        type=["xlsx", "csv"],
+        help="Эти каналы будут исключены из результатов текущего поиска."
+    )
+
+# =================== ЗАГРУЗКА БАЗЫ ДЛЯ ИСКЛЮЧЕНИЯ ===================
+existing_ids: set[str] = set()
+if uploaded_file is not None:
+    try:
+        if uploaded_file.name.endswith(".csv"):
+            df_existing = pd.read_csv(uploaded_file)
+        else:
+            df_existing = pd.read_excel(uploaded_file)
+
+        # Находим подходящие колонки
+        cols_lower = {c.lower(): c for c in df_existing.columns}
+        channel_id_col = None
+        link_col = None
+
+        # приоритет: явный channel_id
+        for k, orig in cols_lower.items():
+            if "channel_id" == k or k.endswith("channel_id") or k == "id":
+                channel_id_col = orig
+                break
+        if not channel_id_col:
+            # ищем ссылку
+            for k, orig in cols_lower.items():
+                if "ссыл" in k or "link" in k or "url" in k:
+                    link_col = orig
+                    break
+
+        if channel_id_col:
+            for v in df_existing[channel_id_col].dropna():
+                ch = extract_channel_id(str(v))
+                if ch:
+                    existing_ids.add(ch)
+        elif link_col:
+            for v in df_existing[link_col].dropna():
+                ch = extract_channel_id(str(v))
+                if ch:
+                    existing_ids.add(ch)
+        else:
+            st.warning("⚠️ Не нашли столбцы 'channel_id' или 'Ссылка/Link' — исключение дубликатов не применится.")
+
+        st.info(f"📂 Загружено {len(existing_ids)} каналов для исключения")
+    except Exception as e:
+        st.error(f"Ошибка загрузки базы: {e}")
+
+# =================== ВВОД КЛЮЧЕВЫХ СЛОВ ===================
 keywords_input = st.text_area("Ключевые слова (по одному в строке)")
 keywords = [kw.strip() for kw in keywords_input.splitlines() if kw.strip()]
 
-st.caption("ℹ️ Рекомендации: увеличь число страниц на ключ и лимит каналов на ключ, если находок мало. "
-           "При слишком строгих фильтрах результатов будет меньше.")
+st.caption("ℹ️ Рекомендации: увеличь число страниц и лимит каналов на ключ, если находок мало. "
+           "Слишком строгие фильтры тоже могут обнулять результат.")
 
-# =================== УТИЛИТЫ ===================
-def chunked(iterable: List[str], size: int) -> Iterable[List[str]]:
-    for i in range(0, len(iterable), size):
-        yield iterable[i:i + size]
-
-def iso_to_dt(s: str) -> datetime:
-    return datetime.fromisoformat(s.replace("Z", "+00:00"))
-
-def build_client(api_key: str):
-    return build("youtube", "v3", developerKey=api_key)
-
-# -------- Поиск каналов по ключу (пагинация) --------
+# =================== API-ОБОЛОЧКИ ===================
 def search_channels_by_keyword(youtube, keyword: str, max_pages: int, max_channels: int) -> Dict[str, str]:
     """Возвращает {channel_id: channel_title} для заданного ключа, проходя до max_pages страниц."""
     channel_map: Dict[str, str] = {}
@@ -100,7 +183,6 @@ def search_channels_by_keyword(youtube, keyword: str, max_pages: int, max_channe
 
     return channel_map
 
-# -------- Батч-запрос статистики каналов --------
 def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, Tuple[int, int, str, str]]:
     """
     Возвращает словарь:
@@ -130,7 +212,6 @@ def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, Tuple[int
                 out[ch_id] = (subs, total_views, country, uploads_pid)
     return out
 
-# -------- Итерация по загрузкам за период --------
 def iter_recent_upload_video_ids(
     youtube, uploads_playlist_id: str, since_dt: datetime, max_fetch: int
 ) -> Iterable[str]:
@@ -154,7 +235,7 @@ def iter_recent_upload_video_ids(
             if pub >= since_dt:
                 yield it["contentDetails"]["videoId"]
             else:
-                # Так как плейлист идёт от новых к старым — можно сразу закончить
+                # Порядок: новые → старые. Старше периода — дальше можно не идти.
                 return
             if fetched >= max_fetch:
                 return
@@ -163,7 +244,6 @@ def iter_recent_upload_video_ids(
         if not page_token:
             return
 
-# -------- Средние просмотры за период --------
 def get_avg_views_for_period(
     youtube, uploads_playlist_id: str, days: int, max_fetch: int
 ) -> Tuple[Optional[int], int]:
@@ -229,7 +309,7 @@ if st.button("🔍 Найти блогеров"):
         stats_map = fetch_channels_stats(youtube, list(all_channels.keys()))
         progress.progress(60)
 
-        # 3) Фильтруем по базовым метрикам канала
+        # 3) Базовые фильтры по каналу
         base_pass_ids = []
         for ch_id, tpl in stats_map.items():
             subs, total_views, _country, _uploads = tpl
@@ -237,21 +317,31 @@ if st.button("🔍 Найти блогеров"):
                 base_pass_ids.append(ch_id)
 
         if not base_pass_ids:
-            st.warning("😕 Ни один канал не прошёл базовые фильтры по подписчикам/total просмотрам.")
+            st.warning("😕 Ни один канал не прошёл фильтры по подписчикам/total просмотрам.")
             st.stop()
 
-        # 4) Считаем средние просмотры за период и финально фильтруем
+        # 4) Средние просмотры за период + фильтр дубликатов из загруженной базы
         results: List[Dict] = []
+        skipped_existing = 0
+
         for i, ch_id in enumerate(base_pass_ids, start=1):
             title = all_channels.get(ch_id, ch_id)
-            subs, total_views, country, uploads_pid = stats_map[ch_id]
 
+            # исключаем, если уже есть в твоей базе
+            if ch_id in existing_ids:
+                skipped_existing += 1
+                # обновим прогресс от 60% к 100% с учётом пропуска
+                progress.progress(60 + int(40 * i / max(1, len(base_pass_ids))))
+                continue
+
+            subs, total_views, country, uploads_pid = stats_map[ch_id]
             status.write(f"⏱️ {i}/{len(base_pass_ids)} • Считаю средние за {int(period_days)} дн. для: {title}")
             avg_views, n_vids = get_avg_views_for_period(
                 youtube, uploads_pid, int(period_days), max_fetch=int(max_recent_uploads_fetch)
             )
 
             if avg_views is None or avg_views < int(min_avg_views_period):
+                progress.progress(60 + int(40 * i / max(1, len(base_pass_ids))))
                 continue
 
             results.append({
@@ -261,10 +351,10 @@ if st.button("🔍 Найти блогеров"):
                 f"Средние за {int(period_days)} дн.": avg_views,
                 f"Видео за {int(period_days)} дн.": n_vids,
                 "Страна": country,
-                "Ссылка": f"https://www.youtube.com/channel/{ch_id}"
+                "Ссылка": f"https://www.youtube.com/channel/{ch_id}",
+                "channel_id": ch_id,  # удобно сохранять для будущих исключений
             })
 
-            # обновим прогресс от 60% к 100%
             progress.progress(60 + int(40 * i / max(1, len(base_pass_ids))))
 
         status.empty()
@@ -273,12 +363,16 @@ if st.button("🔍 Найти блогеров"):
         # 5) Вывод и выгрузка
         if results:
             df = pd.DataFrame(results)
-            df.drop_duplicates(subset=["Ссылка"], inplace=True)
+            df.drop_duplicates(subset=["channel_id"], inplace=True)
             sort_col = f"Средние за {int(period_days)} дн."
             df.sort_values(by=[sort_col, "Подписчики"], ascending=[False, False], inplace=True)
 
-            st.success(f"✅ Найдено {len(df)} каналов из {len(all_channels)} уникальных кандидатов")
-            st.dataframe(df, use_container_width=True)
+            msg = f"✅ Найдено {len(df)} новых каналов"
+            if uploaded_file is not None:
+                msg += f" (исключено как дубликаты: {skipped_existing})"
+            st.success(msg)
+
+            st.dataframe(df.drop(columns=["channel_id"]), use_container_width=True)
 
             excel_file = "bloggers.xlsx"
             df.to_excel(excel_file, index=False)
@@ -290,4 +384,7 @@ if st.button("🔍 Найти блогеров"):
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
         else:
-            st.warning("😕 По заданным условиям ничего не найдено. Ослабь фильтры или увеличь период/страницы поиска.")
+            if uploaded_file is not None and skipped_existing > 0:
+                st.warning("Все кандидаты оказались в загруженной базе. Попробуй другие ключи или ослабь фильтры.")
+            else:
+                st.warning("😕 По заданным условиям ничего не найдено. Ослабь фильтры или увеличь период/страницы поиска.")
