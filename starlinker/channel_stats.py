@@ -3,7 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 from googleapiclient.errors import HttpError
-from googleapiclient.discovery import Resource  # ← важно для hash_funcs
+from googleapiclient.discovery import Resource  # для hash_funcs
 
 def _chunked(seq: List[str], n: int) -> Iterable[List[str]]:
     for i in range(0, len(seq), n):
@@ -11,7 +11,19 @@ def _chunked(seq: List[str], n: int) -> Iterable[List[str]]:
 
 @st.cache_data(show_spinner=False, ttl=3600, hash_funcs={Resource: lambda _: b"yt"})
 def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, dict]:
-    """Батч-запрос статистики каналов + uploads playlist id."""
+    """
+    Батч-запрос статистики каналов + uploads playlist id + customUrl (для дедупа по handle).
+    Возвращает:
+    {
+      channel_id: {
+        'subs': int,
+        'total_views': int,
+        'country': str,
+        'uploads_playlist_id': str,
+        'custom_url': str|None,
+      }, ...
+    }
+    """
     out: Dict[str, dict] = {}
     for batch in _chunked(channel_ids, 50):
         try:
@@ -24,13 +36,15 @@ def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, dict]:
         for item in res.get("items", []):
             ch_id = item["id"]
             stats = item.get("statistics", {})
-            snip = item.get("snippet", {})
-            cdet = item.get("contentDetails", {})
+            snip = item.get("snippet", {}) or {}
+            cdet = item.get("contentDetails", {}) or {}
             out[ch_id] = {
                 "subs": int(stats.get("subscriberCount", 0) or 0),
                 "total_views": int(stats.get("viewCount", 0) or 0),
                 "country": snip.get("country", "N/A"),
-                "uploads_playlist_id": cdet.get("relatedPlaylists", {}).get("uploads", "")
+                "uploads_playlist_id": cdet.get("relatedPlaylists", {}).get("uploads", ""),
+                # customUrl нужен для совпадений по handle:
+                "custom_url": (snip.get("customUrl") or None),
             }
     return out
 
