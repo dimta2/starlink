@@ -17,17 +17,12 @@ from dotenv import load_dotenv
 st.set_page_config(page_title="StarLinker", page_icon="🔎", layout="wide")
 
 # =================== ИНИЦИАЛИЗАЦИЯ ===================
-load_dotenv()
-# сначала пробуем Streamlit secrets, потом .env
-api_key = os.getenv("YOUTUBE_API_KEY")
-try:
-    import streamlit as st
-    if not api_key:
-        api_key = st.secrets.get("YOUTUBE_API_KEY")
-except Exception:
-    pass
+load_dotenv()  # локально подтягивает .env, в облаке можно оставить
 
-API_KEY = os.getenv("YOUTUBE_API_KEY")
+# 1) пробуем взять из secrets (Streamlit Cloud)
+# 2) если нет, тогда из переменных окружения/ .env
+API_KEY = (st.secrets.get("YOUTUBE_API_KEY")
+           or os.getenv("YOUTUBE_API_KEY"))
 
 st.title("🔎 StarLinker — Поиск блогеров на YouTube (v1.3)")
 
@@ -65,6 +60,7 @@ def extract_channel_id(url_or_id: str) -> str:
 # =================== САЙДБАР: ПАРАМЕТРЫ ===================
 with st.sidebar:
     st.header("⚙️ Параметры поиска")
+    st.write("🔐 API key loaded:", bool(API_KEY))
     max_pages_per_keyword = st.number_input(
         "Макс. страниц на ключ (по 50 видео)",
         min_value=1, max_value=10, value=3, step=1,
