@@ -1,3 +1,4 @@
+from __future__ import annotations
 from typing import Dict, Optional
 from googleapiclient.errors import HttpError
 
@@ -6,16 +7,18 @@ def search_channels_by_keyword(
     keyword: str,
     max_pages: int,
     max_channels: int,
-    by_channel: bool = False
+    by_channel: bool = False,
 ) -> Dict[str, str]:
     """
     Возвращает {channel_id: channel_title}.
-    by_channel=False: ищем видео и берём авторов (шире охват).
-    by_channel=True: ищем сами каналы (точнее, дешевле по пост-обработке).
+
+    by_channel=False: ищем видео и собираем авторов (шире охват).
+    by_channel=True: ищем каналы напрямую (точнее для брендинга, чуть уже охват).
     """
     out: Dict[str, str] = {}
     page_token: Optional[str] = None
     pages = 0
+
     while True:
         try:
             if by_channel:
@@ -44,10 +47,12 @@ def search_channels_by_keyword(
                         if len(out) >= max_channels:
                             return out
         except HttpError:
+            # Тихо пропускаем ошибку (квота/транзиент) и выходим из цикла
             break
 
         page_token = resp.get("nextPageToken")
         pages += 1
         if not page_token or pages >= max_pages:
             break
+
     return out

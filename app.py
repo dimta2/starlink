@@ -1,6 +1,6 @@
-# app.py
+from __future__ import annotations
 import os
-os.environ["STREAMLIT_SERVER_FILEWATCHER_TYPE"] = "none"  # чтобы избежать inotify ENOSPC на хостингах
+os.environ["STREAMLIT_SERVER_FILEWATCHER_TYPE"] = "none"  # избегаем inotify ENOSPC
 
 import streamlit as st
 import pandas as pd
@@ -20,13 +20,12 @@ if not API_KEY:
     st.stop()
 
 with st.sidebar:
-    st.subheader("🎛️ Интенсивность поиска (один переключатель)")
+    st.subheader("🎛️ Интенсивность поиска")
     intensity = st.selectbox(
-        "Интенсивность поиска",
+        "Глубина и стоимость",
         ["Низкая (дёшево)", "Средняя (сбаланс.)", "Высокая (глубоко)"],
         index=1
     )
-    # единая ручка управляет глубиной/стоимостью
     PRESETS = {
         "Низкая (дёшево)":    {"pages": 1, "max_ch_per_kw": 80,  "videos_for_avg": 40,  "by_channel": True},
         "Средняя (сбаланс.)": {"pages": 2, "max_ch_per_kw": 200, "videos_for_avg": 80,  "by_channel": False},
@@ -35,7 +34,7 @@ with st.sidebar:
     P = PRESETS[intensity]
 
     st.markdown("---")
-    st.subheader("📊 Фильтры качества (как раньше)")
+    st.subheader("📊 Фильтры качества")
     min_subs = st.number_input("Мин. подписчиков", value=1_000, step=500)
     max_subs = st.number_input("Макс. подписчиков", value=500_000, step=1_000)
     min_views_total = st.number_input("Мин. просмотров канала (total)", value=10_000, step=1_000)
@@ -43,7 +42,7 @@ with st.sidebar:
     min_avg_views_period = st.number_input("Мин. средние просмотры за период", value=2_000, step=100)
 
     st.markdown("---")
-    st.subheader("🗂️ База дубликатов (простой режим)")
+    st.subheader("🗂️ База дубликатов (очень просто)")
     uploaded_file = st.file_uploader("Excel/CSV с ОДНИМ столбцом названий каналов", type=["xlsx", "csv"])
     st.caption("Мы исключим каналы, чьи названия совпадают с названиями из файла (без учёта регистра и лишних пробелов).")
 
@@ -58,7 +57,7 @@ if st.button("🔍 Найти блогеров"):
     yt = get_youtube_client(API_KEY)
 
     # 0) Чтение базы: один столбец с названиями (любой лист объединяем)
-    title_blocklist = set()
+    title_blocklist: set[str] = set()
     if uploaded_file is not None:
         try:
             if uploaded_file.name.endswith(".csv"):
@@ -111,12 +110,12 @@ if st.button("🔍 Найти блогеров"):
         st.caption(f"🧹 Исключено по названию из базы: {before - len(stats)}")
     prog.progress(65)
 
-    # 4) Фильтр по подписчикам и total просмотрам канала
+    # 4) Фильтры подписчики/total
     base_pass = [
         cid for cid, s in stats.items()
         if s.get("uploads_playlist_id")
         and (min_subs <= s.get("subs", 0) <= max_subs)
-        and (s.get("total_views", 0) >= min_views_total if "total_views" in s else True)  # если поле есть
+        and (s.get("total_views", 0) >= min_views_total)
     ]
     if not base_pass:
         st.warning("Никто не прошёл фильтры по подписчикам/просмотрам.")
@@ -127,13 +126,16 @@ if st.button("🔍 Найти блогеров"):
     for i, cid in enumerate(base_pass, start=1):
         t = stats[cid].get("title") or all_channels.get(cid, cid)
         note.write(f"⏱️ {i}/{len(base_pass)} • Средние за {period_days} дн.: {t}")
-        avg, count = get_avg_views_for_period(yt, stats[cid]["uploads_playlist_id"], period_days, P["videos_for_avg"])
+        avg, count = get_avg_views_for_period(
+            yt, stats[cid]["uploads_playlist_id"], period_days, P["videos_for_avg"]
+        )
         if avg is None or avg < min_avg_views_period:
             prog.progress(65 + int(35 * i / len(base_pass)))
             continue
         rows.append({
             "Канал": t,
             "Подписчики": stats[cid]["subs"],
+            "Просмотры_total": stats[cid]["total_views"],
             "Средние_за_дни": avg,
             "Видео_за_дни": count,
             "Страна": stats[cid]["country"],
