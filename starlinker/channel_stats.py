@@ -3,8 +3,7 @@ from datetime import datetime, timedelta, timezone
 
 import streamlit as st
 from googleapiclient.errors import HttpError
-from googleapiclient.discovery import Resource
-from .quota import add
+from googleapiclient.discovery import Resource  # для hash_funcs
 
 def _chunked(seq: List[str], n: int) -> Iterable[List[str]]:
     for i in range(0, len(seq), n):
@@ -12,11 +11,10 @@ def _chunked(seq: List[str], n: int) -> Iterable[List[str]]:
 
 @st.cache_data(show_spinner=False, ttl=3600, hash_funcs={Resource: lambda _: b"yt"})
 def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, dict]:
-    """channel_id -> {'subs','total_views','country','uploads_playlist_id','custom_url','title'}"""
+    """channel_id -> {'subs','country','uploads_playlist_id','title'}"""
     out: Dict[str, dict] = {}
     for batch in _chunked(channel_ids, 50):
         try:
-            add(1, note=f"channels.list x{len(batch)}")
             res = youtube.channels().list(
                 part="statistics,snippet,contentDetails",
                 id=",".join(batch)
@@ -30,10 +28,8 @@ def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, dict]:
             cdet = item.get("contentDetails", {}) or {}
             out[ch_id] = {
                 "subs": int(stats.get("subscriberCount", 0) or 0),
-                "total_views": int(stats.get("viewCount", 0) or 0),
                 "country": snip.get("country", "N/A"),
                 "uploads_playlist_id": cdet.get("relatedPlaylists", {}).get("uploads", ""),
-                "custom_url": (snip.get("customUrl") or None),
                 "title": snip.get("title") or None,
             }
     return out
@@ -46,7 +42,6 @@ def iter_recent_upload_video_ids(youtube, uploads_playlist_id: str, since_dt: da
     page_token: Optional[str] = None
     while True:
         try:
-            add(1, note="playlistItems.list")
             pl = youtube.playlistItems().list(
                 part="contentDetails",
                 playlistId=uploads_playlist_id,
@@ -78,7 +73,6 @@ def get_avg_views_for_period(youtube, uploads_playlist_id: str, days: int, max_f
     counted = 0
     for batch in _chunked(vids, 50):
         try:
-            add(1, note=f"videos.list x{len(batch)}")
             vres = youtube.videos().list(part="statistics", id=",".join(batch)).execute()
         except HttpError:
             continue
