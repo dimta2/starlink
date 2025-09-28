@@ -12,6 +12,7 @@ def _chunked(seq: List[str], n: int) -> Iterable[List[str]]:
 
 @st.cache_data(show_spinner=False, ttl=3600, hash_funcs={Resource: lambda _: b"yt"})
 def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, dict]:
+    """channel_id -> {'subs','total_views','country','uploads_playlist_id','custom_url','title'}"""
     out: Dict[str, dict] = {}
     for batch in _chunked(channel_ids, 50):
         try:
@@ -33,6 +34,7 @@ def fetch_channels_stats(youtube, channel_ids: List[str]) -> Dict[str, dict]:
                 "country": snip.get("country", "N/A"),
                 "uploads_playlist_id": cdet.get("relatedPlaylists", {}).get("uploads", ""),
                 "custom_url": (snip.get("customUrl") or None),
+                "title": snip.get("title") or None,
             }
     return out
 
